@@ -1,5 +1,7 @@
+import atexit
 import json
 import logging
+import os
 
 from dotenv import load_dotenv
 from groq import Groq
@@ -7,6 +9,8 @@ from langchain_core.messages import HumanMessage, AIMessage
 from langchain_groq import ChatGroq
 from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.graph import StateGraph, START, END
+from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 from pydantic import ValidationError
 from tenacity import retry, stop_after_attempt, wait_exponential
 
@@ -630,9 +634,47 @@ builder.add_edge("request_cancel_confirmation", END)
 builder.add_edge("cancel_pending", END)
 
 
-# Keep the PostgreSQL checkpointer alive for the lifetime of the graph.
-checkpointer_context = PostgresSaver.from_conn_string(DATABASE_URL)
-checkpointer = checkpointer_context.__enter__()
-checkpointer.setup()
+# ---------- PostgreSQL checkpointer (pool-based, cloud-safe) ----------
+# Using an explicit ConnectionPool instead of PostgresSaver.from_conn_string().
+#
+# Why:
+#   1. from_conn_string() opens ONE raw connection that lives for the whole
+#      process — fine locally, but brittle on Streamlit Cloud where sessions
+#      can time out, and it exhausts Supabase's connection limit fast.
+#   2. Supabase's Supavisor pooler does NOT support prepared statements in
+#      transaction mode. prepare_threshold=None disables them, preventing the
+#      "prepared statement already exists" and ENOTFOUND-style failures.
+#   3. The pool gives us automatic reconnection, keep-alives and bounded
+#      concurrency (min_size=2, max_size=5).
+
+_checkpointer_pool = ConnectionPool(
+    conninfo=DATABASE_URL,
+    min_size=2,
+    max_size=5,
+    max_idle=300.0,
+    timeout=30.0,
+    kwargs={
+        "autocommit": True,
+        "prepare_threshold": None,   # CRITICAL for Supabase pooler
+        "row_factory": dict_row,
+    },
+    open=True,
+)
+
+checkpointer = PostgresSaver(_checkpointer_pool)
+
+# Create checkpoint tables once. Safe to call on every startup — the
+# underlying SQL uses CREATE TABLE IF NOT EXISTS. If you prefer to avoid
+# the round-trip, wrap in try/except and ignore "already exists" errors.
+try:
+    checkpointer.setup()
+except Exception as e:
+    logger.warning(f"Checkpointer setup skipped/failed: {e}")
+
+# Close the pool cleanly on shutdown so psycopg_pool's worker threads
+# finish before the interpreter tears down. Prevents the cosmetic
+# "PythonFinalizationError: cannot join thread at interpreter shutdown"
+# message that otherwise appears on every script exit.
+atexit.register(_checkpointer_pool.close)
 
 graph = builder.compile(checkpointer=checkpointer)
