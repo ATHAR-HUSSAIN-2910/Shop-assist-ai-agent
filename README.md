@@ -35,7 +35,7 @@ ShopAssist AI understands customer requests, classifies intent, retrieves compan
 
 ## 🚀 Live Demo
 
-> 🌐 **Live App:** _Coming soon — deploying to Streamlit Community Cloud_
+> 🌐 **Live App:** [athars-shop-assist-ai-agent.streamlit.app](https://athars-shop-assist-ai-agent.streamlit.app/)
 
 ---
 
@@ -207,8 +207,8 @@ shopassist-ai/
 ### 1. Clone and install
 
 ```bash
-git clone <YOUR_REPO_URL>
-cd shopassist-ai
+git clone https://github.com/ATHAR-HUSSAIN-2910/Shop-assist-ai-agent.git
+cd Shop-assist-ai-agent
 python -m venv .venv
 
 # Windows
